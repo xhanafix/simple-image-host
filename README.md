@@ -3,7 +3,7 @@
 A modern, responsive, and secure image hosting web app built with a single PHP file.
 
 ## Features
-- **Drag & Drop Upload:** Upload one or multiple images at once (JPG, PNG, GIF, max 5MB each).
+- **Drag & Drop Upload:** Upload one or multiple images at once (JPG, PNG, GIF, max 10MB each).
 - **Bulk Upload:** Select or drag multiple files for upload.
 - **Image Preview:** See thumbnails before uploading.
 - **Share Codes:** Get Direct Link, HTML, BBCode, and Markdown for each uploaded image.
@@ -33,7 +33,7 @@ A modern, responsive, and secure image hosting web app built with a single PHP f
    - Click the theme toggle (top right) to switch between dark and light mode.
 
 ## Security Notes
-- Only image files (JPG, PNG, GIF) up to 5MB are allowed.
+- Only image files (JPG, PNG, GIF) up to 10MB are allowed.
 - All uploaded files are stored in the `/uploads` directory with unique names.
 - Deletion is only allowed for files in the `/uploads` directory.
 - No authentication is included; anyone with access to the page can upload or delete images.

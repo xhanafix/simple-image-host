@@ -2,15 +2,17 @@
 // Deployment Note: For load balanced deployment, serve this app behind a load balancer (e.g., Nginx, Apache, or a cloud provider's load balancer). Ensure the /uploads directory is shared (e.g., via NFS, cloud storage, or synced) across all servers for consistent access to uploaded files.
 // Set the upload directory
 $uploadDir = __DIR__ . '/uploads/';
-$uploadUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") . "://" . $_SERVER['HTTP_HOST'] . dirname($_SERVER['PHP_SELF']) . '/uploads/';
+$baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") . "://" . $_SERVER['HTTP_HOST'];
+$scriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['PHP_SELF'])), '/');
+$uploadUrl = $baseUrl . ($scriptDir ? '/' . ltrim($scriptDir, '/') : '') . '/uploads/';
 
-// Allowed file types and max size (5MB)
+// Allowed file types and max size (10MB)
 $allowedTypes = [
     'image/jpeg' => 'jpg',
     'image/png'  => 'png',
     'image/gif'  => 'gif',
 ];
-$maxFileSize = 5 * 1024 * 1024; // 5MB
+$maxFileSize = 10 * 1024 * 1024; // 10MB
 
 // Ensure the uploads directory exists
 if (!is_dir($uploadDir)) {
@@ -72,7 +74,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
             $result = ['file' => $file['name'], 'status' => 'error', 'message' => ''];
             
             if ($file['size'] > $maxFileSize) {
-                $result['message'] = 'File is too large. Max size is 5MB.';
+                $result['message'] = 'File is too large. Max size is 10MB.';
             } elseif (!array_key_exists(mime_content_type($file['tmp_name']), $allowedTypes)) {
                 $result['message'] = 'Invalid file type. Only JPG, PNG, and GIF are allowed.';
             } else {
@@ -762,7 +764,7 @@ class FileUploadManager {
         this.uploadForm = document.getElementById('uploadForm');
         
         this.allowedTypes = ['image/jpeg', 'image/png', 'image/gif'];
-        this.maxFileSize = 5 * 1024 * 1024; // 5MB
+        this.maxFileSize = 10 * 1024 * 1024; // 10MB
         
         this.init();
     }
@@ -830,7 +832,7 @@ class FileUploadManager {
         }
         
         if (file.size > this.maxFileSize) {
-            this.showError(`File too large: ${file.name}. Max size is 5MB.`);
+            this.showError(`File too large: ${file.name}. Max size is 10MB.`);
             return false;
         }
         
