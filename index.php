@@ -1,4 +1,7 @@
 <?php
+// Always start session at the very top, before any output
+if (session_status() === PHP_SESSION_NONE) session_start();
+
 // Deployment Note: For load balanced deployment, serve this app behind a load balancer (e.g., Nginx, Apache, or a cloud provider's load balancer). Ensure the /uploads directory is shared (e.g., via NFS, cloud storage, or synced) across all servers for consistent access to uploaded files.
 // Set the upload directory
 $uploadDir = __DIR__ . '/uploads/';
@@ -56,11 +59,10 @@ if (isset($_POST['bulk_delete']) && isset($_POST['selected_files']) && is_array(
     }
 }
 
-// Handle multiple image uploads
+// Handle multiple image uploads (POST/Redirect/GET)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
     $uploadResults = [];
     $totalFiles = count($_FILES['images']['name']);
-    
     for ($i = 0; $i < $totalFiles; $i++) {
         if ($_FILES['images']['error'][$i] === UPLOAD_ERR_OK) {
             $file = [
@@ -70,9 +72,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
                 'error' => $_FILES['images']['error'][$i],
                 'size' => $_FILES['images']['size'][$i]
             ];
-            
             $result = ['file' => $file['name'], 'status' => 'error', 'message' => ''];
-            
             if ($file['size'] > $maxFileSize) {
                 $result['message'] = 'File is too large. Max size is 10MB.';
             } elseif (!array_key_exists(mime_content_type($file['tmp_name']), $allowedTypes)) {
@@ -82,7 +82,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
                 $ext = $allowedTypes[$mime];
                 $uniqueName = uniqid('img_', true) . '.' . $ext;
                 $destination = $uploadDir . $uniqueName;
-                
                 $imageInfo = getimagesize($file['tmp_name']);
                 if ($imageInfo === false) {
                     $result['message'] = 'Uploaded file is not a valid image.';
@@ -100,13 +99,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
             $uploadResults[] = $result;
         }
     }
-    
     if (!empty($uploadResults)) {
         $successCount = count(array_filter($uploadResults, function($r) { return $r['status'] === 'success'; }));
         $message = $successCount . ' of ' . count($uploadResults) . ' file(s) uploaded successfully!';
-        $shareLinks = $uploadResults;
+        $_SESSION['uploadResults'] = $uploadResults;
+        $_SESSION['uploadMessage'] = $message;
+        header('Location: ' . strtok($_SERVER['REQUEST_URI'], '?') . '?upload=success');
+        exit;
     }
 }
+
+// Show upload results after redirect (GET)
+if (isset($_GET['upload']) && $_GET['upload'] === 'success' && isset($_SESSION['uploadResults'])) {
+    $shareLinks = $_SESSION['uploadResults'];
+    $message = $_SESSION['uploadMessage'] ?? '';
+    unset($_SESSION['uploadResults'], $_SESSION['uploadMessage']);
+}
+
+// Instead, get all files sorted by newest first
+$allFiles = array_values(array_filter(array_diff(scandir($uploadDir), array('.', '..')), function($file) use ($uploadDir) {
+    $filePath = $uploadDir . $file;
+    return is_file($filePath) && @getimagesize($filePath);
+}));
+usort($allFiles, function($a, $b) use ($uploadDir) {
+    return filemtime($uploadDir . $b) <=> filemtime($uploadDir . $a);
+});
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -217,6 +234,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
             display: flex;
             align-items: center;
             justify-content: center;
+        }
+        .upload-progress {
+            width: 100%;
+            height: 4px;
+            background: var(--input-border);
+            border-radius: 2px;
+            overflow: hidden;
+            margin: 12px 0;
+            display: none;
+        }
+        .upload-progress-bar {
+            height: 100%;
+            background: var(--primary);
+            width: 0%;
+            transition: width 0.3s ease;
+            border-radius: 2px;
+        }
+        .upload-status {
+            text-align: center;
+            color: var(--primary);
+            font-size: 0.9em;
+            font-weight: 600;
+            margin: 8px 0;
+            display: none;
         }
         .theme-toggle {
             position: absolute;
@@ -448,70 +489,167 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
         /* Management section */
         .images {
             width: 100%;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 18px;
-            justify-content: center;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 24px;
+            justify-items: center;
+            align-items: start;
+            margin-bottom: 24px;
+            padding: 24px 0 0 0;
+            background: linear-gradient(135deg, var(--bg-alt) 0%, var(--bg) 100%);
+            border-radius: 18px;
+            box-shadow: 0 2px 16px rgba(0,0,0,0.04);
+            min-height: 200px;
+            /* For smooth scroll */
+            scroll-behavior: smooth;
+        }
+        .images.loading::after {
+            content: 'Loading...';
+            display: block;
+            text-align: center;
+            color: var(--primary);
+            font-size: 1.1em;
+            padding: 18px 0;
+            grid-column: 1/-1;
         }
         .img-card {
             background: var(--container);
-            border-radius: 10px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-            padding: 12px 12px 8px 12px;
+            border-radius: 16px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.10);
+            padding: 0 0 16px 0;
             display: flex;
             flex-direction: column;
             align-items: center;
-            width: 140px;
+            width: 100%;
+            min-width: 0;
+            max-width: 220px;
             position: relative;
-        }
-        .img-card input[type="checkbox"] {
-            position: absolute;
-            top: 8px;
-            left: 8px;
-            z-index: 10;
-            width: 18px;
-            height: 18px;
+            transition: box-shadow 0.2s, transform 0.2s, border 0.2s;
             cursor: pointer;
+            border: 1.5px solid var(--input-border);
+            overflow: hidden;
+            color: var(--text);
+        }
+        .img-card:hover {
+            box-shadow: 0 8px 32px rgba(79,140,255,0.18);
+            transform: translateY(-4px) scale(1.03);
+            border: 1.5px solid var(--primary);
         }
         .img-card img {
-            max-width: 110px;
-            max-height: 90px;
-            border-radius: 6px;
-            margin-bottom: 8px;
+            width: 100%;
+            aspect-ratio: 1/1;
+            object-fit: cover;
+            border-radius: 0;
+            margin-bottom: 0;
+            box-shadow: none;
+            background: #f3f6fa;
+            opacity: 0;
+            transition: opacity 0.5s;
+            display: block;
+        }
+        .img-card img.loaded {
+            opacity: 1;
         }
         .img-card .filename {
-            font-size: 0.92em;
+            font-size: 1em;
             word-break: break-all;
+            margin: 0;
+            text-align: center;
+            max-width: 90%;
+            color: var(--primary-dark);
+            background: rgba(255,255,255,0.9);
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-weight: 600;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+            margin-top: 10px;
+            margin-bottom: 8px;
+            align-self: center;
+        }
+        .img-card .upload-date {
+            font-size: 0.93em;
+            color: var(--primary-dark);
+            opacity: 0.85;
             margin-bottom: 6px;
             text-align: center;
-            max-width: 120px;
         }
         .img-card form {
             margin: 0;
+            width: 100%;
+            display: flex;
+            justify-content: center;
         }
         .img-card button {
             background: #d9534f;
             color: #fff;
             border: none;
             border-radius: 6px;
-            padding: 5px 14px;
-            font-size: 0.95em;
+            padding: 6px 18px;
+            font-size: 1em;
             cursor: pointer;
+            margin-top: 0;
+            margin-bottom: 0;
+            transition: background 0.2s;
+            font-weight: 600;
+        }
+        .img-card button:hover {
+            background: #c82333;
+        }
+        @media (max-width: 900px) {
+            .images {
+                grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+                gap: 12px;
+                padding: 12px 0 0 0;
+            }
+            .img-card {
+                max-width: 100%;
+                min-width: 0;
+            }
         }
         @media (max-width: 600px) {
             .container, .container.manage {
-                max-width: 98vw;
-                padding: 18px 4vw 18px 4vw;
-                margin: 16px auto 0 auto;
+                max-width: 100vw;
+                padding: 10px 2vw 10px 2vw;
+                margin: 10px auto 0 auto;
+            }
+            .images {
+                grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+                gap: 8px;
+                padding: 8px 0 0 0;
             }
             .img-card {
-                width: 98vw;
-                max-width: 180px;
+                max-width: 100%;
+                min-width: 0;
             }
-            .img-card img {
-                max-width: 98vw;
-                max-height: 120px;
-            }
+        }
+        /* Pagination controls */
+        .gallery-pagination {
+            margin-top: 0;
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            align-items: center;
+        }
+        .gallery-pagination a, .gallery-pagination span {
+            padding: 8px 18px;
+            border-radius: 8px;
+            background: var(--input-bg);
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 1.05em;
+            transition: background 0.2s, color 0.2s;
+        }
+        .gallery-pagination a[aria-disabled="true"] {
+            pointer-events: none;
+            opacity: 0.5;
+        }
+        .gallery-pagination span {
+            color: var(--text);
+            background: transparent;
+            font-weight: 600;
+            font-size: 1em;
         }
         button[type="submit"] {
             margin-top: 16px;
@@ -559,7 +697,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
 </head>
 <body>
 <button class="theme-toggle" id="themeToggle" title="Toggle dark/light mode" aria-label="Toggle dark/light mode">
-    <svg id="themeIcon" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="5" stroke="#4f8cff" stroke-width="2"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" stroke="#4f8cff" stroke-width="2"/></svg>
+    <svg id="themeIcon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
 </button>
 <div class="nav">
     <button class="nav-btn active" id="tab-upload" onclick="showTab('upload')">Upload Image</button>
@@ -567,28 +707,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
 </div>
 <div id="section-upload" class="container">
     <div class="upload-icon">
-        <!-- SVG upload icon -->
-        <svg width="100%" height="100%" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="8" y="40" width="48" height="12" rx="4" fill="#e6f0ff"/>
-            <path d="M32 44V16" stroke="#4f8cff" stroke-width="4" stroke-linecap="round"/>
-            <path d="M24 24L32 16L40 24" stroke="#4f8cff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
     </div>
-    <h2>Upload an Image</h2>
+    <h2>Upload Images</h2>
     <?php if ($message && !$shareLinks): ?>
         <div class="message<?php echo ($message === 'Image uploaded successfully!') ? ' success' : ''; ?>"><?php echo htmlspecialchars($message); ?></div>
     <?php endif; ?>
     <form method="post" enctype="multipart/form-data" id="uploadForm" autocomplete="off">
         <div class="drop-area" id="dropArea">
-            <svg width="32" height="32" fill="none" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 14V6M10 6L6 10M10 6l4 4" stroke="#4f8cff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><rect x="3" y="14" width="14" height="3" rx="1.5" fill="#e6f0ff"/></svg>
-            <span id="dropText">Drag & drop multiple images or click to select…</span>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span id="dropText">Drag & drop images or click to select</span>
             <input type="file" name="images[]" id="fileInput" accept="image/jpeg,image/png,image/gif" multiple required style="display:none;">
         </div>
+        <div class="upload-progress" id="uploadProgress">
+            <div class="upload-progress-bar" id="uploadProgressBar"></div>
+        </div>
+        <div class="upload-status" id="uploadStatus"></div>
         <div class="preview" id="preview"></div>
-        <button type="submit" id="uploadBtn">Upload All</button>
+        <button type="submit" id="uploadBtn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px;">
+                <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Upload All
+        </button>
         <div class="message" id="clientError" style="display:none;"></div>
     </form>
-    <?php if (isset($shareLinks) && is_array($shareLinks)): ?>
+    <?php if (!empty($shareLinks) && is_array($shareLinks)): ?>
         <div class="upload-results">
             <h3 style="margin-bottom: 12px; color: var(--text);">Upload Results:</h3>
             <?php foreach ($shareLinks as $result): ?>
@@ -628,51 +776,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
     <?php endif; ?>
 </div>
 <div id="section-manage" class="container manage" style="display:none;">
-    <h2>Manage Uploaded Images</h2>
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <h2>Manage Images</h2>
+    </div>
     <?php if ($message && !$shareLinks): ?>
         <div class="message<?php echo ($message === 'File deleted successfully!' || strpos($message, 'deleted successfully!') !== false) ? ' success' : ''; ?>"><?php echo htmlspecialchars($message); ?></div>
     <?php endif; ?>
     <div style="margin-bottom: 16px; display: flex; gap: 8px; align-items: center; justify-content: center;">
         <label style="display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text); cursor: pointer;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
             <input type="checkbox" id="selectAllCheckbox" style="width: 18px; height: 18px; cursor: pointer;">
             Select All
         </label>
-        <button id="deleteSelectedBtn" onclick="deleteSelected()" style="background: #d9534f; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 0.95em; cursor: pointer; display: none;">Delete Selected</button>
+        <button id="deleteSelectedBtn" onclick="deleteSelected()" style="background: #d9534f; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 0.95em; cursor: pointer; display: none; display: flex; align-items: center; gap: 6px;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Delete Selected
+        </button>
     </div>
     <form id="bulkDeleteForm" method="post" style="display: none;">
         <input type="hidden" name="bulk_delete" value="1">
         <div id="selectedFilesInputs"></div>
     </form>
-    <div class="images">
-    <?php
-    $files = array_diff(scandir($uploadDir), array('.', '..'));
-    $hasImages = false;
-    foreach ($files as $file):
-        $filePath = $uploadDir . $file;
-        $fileUrl = $uploadUrl . $file;
-        if (is_file($filePath) && ($imgInfo = @getimagesize($filePath))):
-            $hasImages = true;
-            $fileSize = filesize($filePath);
-    ?>
-        <div class="img-card" tabindex="0">
-            <input type="checkbox" class="file-checkbox" value="<?php echo htmlspecialchars($file); ?>" style="position: absolute; top: 8px; left: 8px; z-index: 10;">
-            <img src="<?php echo htmlspecialchars($fileUrl); ?>" alt="" onclick="showImageDetails('<?php echo htmlspecialchars(addslashes($file)); ?>', '<?php echo htmlspecialchars(addslashes($fileUrl)); ?>', <?php echo $imgInfo[0]; ?>, <?php echo $imgInfo[1]; ?>, <?php echo $fileSize; ?>)" style="cursor: pointer;">
-            <div class="filename"><?php echo htmlspecialchars($file); ?></div>
-            <form method="post">
-                <input type="hidden" name="delete_file" value="<?php echo htmlspecialchars($file); ?>">
-                <button type="submit">Delete</button>
-            </form>
-        </div>
-    <?php endif; endforeach; ?>
-    <?php if (!$hasImages): ?>
-        <div style="color:var(--text);opacity:0.7;font-size:1em;">No images uploaded yet.</div>
-    <?php endif; ?>
+    <div class="images" id="imagesGallery">
+        <!-- Images will be loaded here by JS -->
     </div>
     <!-- Modal for image details -->
     <div id="imgDetailsModal" style="display:none;position:fixed;z-index:1000;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.45);align-items:center;justify-content:center;">
         <div style="background:var(--container);padding:28px 18px 18px 18px;border-radius:14px;max-width:98vw;max-height:92vh;overflow:auto;box-shadow:0 8px 32px rgba(0,0,0,0.18);position:relative;display:flex;flex-direction:column;align-items:center;">
-            <button onclick="closeImgDetails()" style="position:absolute;top:10px;right:14px;background:none;border:none;font-size:1.6em;color:var(--text);cursor:pointer;">&times;</button>
-            <img id="modalImg" src="" alt="" style="max-width:320px;max-height:320px;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,0.08);margin-bottom:12px;">
+            <button onclick="closeImgDetails()" style="position:absolute;top:10px;right:14px;background:none;border:none;color:var(--text);cursor:pointer;display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;transition:background 0.2s;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M6 18L18 6M6 6l12 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 8px;">
+                <button id="modalPrevBtn" style="background: none; border: none; color: var(--primary); cursor: pointer; padding: 8px; border-radius: 50%; transition: background 0.2s; display: flex; align-items: center; justify-content: center;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M15 19l-7-7 7-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
+                <img id="modalImg" src="" alt="" style="max-width:320px;max-height:320px;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+                <button id="modalNextBtn" style="background: none; border: none; color: var(--primary); cursor: pointer; padding: 8px; border-radius: 50%; transition: background 0.2s; display: flex; align-items: center; justify-content: center;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M9 5l7 7-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
+            </div>
             <div style="width:100%;max-width:320px;">
                 <div style="margin-bottom:6px;"><b>Filename:</b> <span id="modalFilename"></span></div>
                 <div style="margin-bottom:6px;"><b>Size:</b> <span id="modalSize"></span></div>
@@ -681,6 +836,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['images'])) {
                 <div style="margin-bottom:6px;"><b>HTML:</b> <input id="modalHtml" type="text" readonly style="width:100%;" onclick="this.select();"></div>
                 <div style="margin-bottom:6px;"><b>BBCode:</b> <input id="modalBB" type="text" readonly style="width:100%;" onclick="this.select();"></div>
                 <div style="margin-bottom:6px;"><b>Markdown:</b> <input id="modalMd" type="text" readonly style="width:100%;" onclick="this.select();"></div>
+                <div style="margin-bottom:6px;"><b>Uploaded:</b> <span id="modalUploadTime"></span></div>
             </div>
         </div>
     </div>
@@ -719,8 +875,8 @@ class ThemeManager {
         if (!this.themeIcon) return;
         
         this.themeIcon.innerHTML = mode === 'dark' 
-            ? '<path d="M21.64 13A9 9 0 1111 2.36 7 7 0 0021.64 13z" stroke="#7ab8ff" stroke-width="2" fill="none"/>'
-            : '<circle cx="12" cy="12" r="5" stroke="#4f8cff" stroke-width="2"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" stroke="#4f8cff" stroke-width="2"/>';
+            ? '<path d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
+            : '<path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
     }
 }
 
@@ -731,9 +887,18 @@ class TabManager {
     }
 
     init() {
-        // Auto-show correct tab based on action
-        const shouldShowManage = <?php echo isset($_POST['delete_file']) || isset($_POST['bulk_delete']) ? 'true' : 'false'; ?>;
+        // Auto-show correct tab based on action or page param
+        const urlParams = new URLSearchParams(window.location.search);
+        const hasPageParam = urlParams.has('page');
+        const shouldShowManage = hasPageParam || <?php echo isset($_POST['delete_file']) || isset($_POST['bulk_delete']) ? 'true' : 'false'; ?>;
         this.showTab(shouldShowManage ? 'manage' : 'upload');
+        // Listen for tab clicks
+        document.getElementById('tab-upload').addEventListener('click', () => this.showTab('upload'));
+        document.getElementById('tab-manage').addEventListener('click', () => this.showTab('manage'));
+        // If hash is #section-manage, show manage tab
+        if (window.location.hash === '#section-manage') {
+            this.showTab('manage');
+        }
     }
 
     showTab(tab) {
@@ -745,11 +910,16 @@ class TabManager {
             upload: document.getElementById('tab-upload'),
             manage: document.getElementById('tab-manage')
         };
-
         Object.keys(sections).forEach(key => {
             if (sections[key]) sections[key].style.display = key === tab ? '' : 'none';
             if (buttons[key]) buttons[key].classList.toggle('active', key === tab);
         });
+        // Update hash for navigation
+        if (tab === 'manage') {
+            window.location.hash = '#section-manage';
+        } else {
+            window.location.hash = '';
+        }
     }
 }
 
@@ -762,6 +932,9 @@ class FileUploadManager {
         this.clientError = document.getElementById('clientError');
         this.uploadBtn = document.getElementById('uploadBtn');
         this.uploadForm = document.getElementById('uploadForm');
+        this.uploadProgress = document.getElementById('uploadProgress');
+        this.uploadProgressBar = document.getElementById('uploadProgressBar');
+        this.uploadStatus = document.getElementById('uploadStatus');
         
         this.allowedTypes = ['image/jpeg', 'image/png', 'image/gif'];
         this.maxFileSize = 10 * 1024 * 1024; // 10MB
@@ -789,8 +962,7 @@ class FileUploadManager {
         // Form submission
         this.uploadForm?.addEventListener('submit', e => this.handleSubmit(e));
         
-        // Error handling
-        window.addEventListener('error', () => this.showError('A client-side error occurred. Please try again.'));
+        // More specific error handling - remove overly broad error handler
         window.addEventListener('offline', () => this.showError('You are offline. Please check your connection.'));
     }
 
@@ -859,13 +1031,31 @@ class FileUploadManager {
             
             const removeBtn = document.createElement('button');
             removeBtn.className = 'preview-item-remove';
-            removeBtn.textContent = '×';
+            removeBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6 18L18 6M6 6l12 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
             removeBtn.onclick = () => previewItem.remove();
             
             previewItem.append(img, info, removeBtn);
             this.preview.appendChild(previewItem);
         };
         reader.readAsDataURL(file);
+    }
+
+    showProgress(show = true) {
+        if (this.uploadProgress) {
+            this.uploadProgress.style.display = show ? 'block' : 'none';
+        }
+        if (this.uploadStatus) {
+            this.uploadStatus.style.display = show ? 'block' : 'none';
+        }
+    }
+
+    updateProgress(percent, status = '') {
+        if (this.uploadProgressBar) {
+            this.uploadProgressBar.style.width = percent + '%';
+        }
+        if (this.uploadStatus && status) {
+            this.uploadStatus.textContent = status;
+        }
     }
 
     handleSubmit(e) {
@@ -876,7 +1066,39 @@ class FileUploadManager {
         }
         
         this.uploadBtn.disabled = true;
-        this.uploadBtn.textContent = 'Uploading…';
+        this.uploadBtn.textContent = 'Uploading...';
+        this.showProgress(true);
+        this.updateProgress(0, 'Preparing upload...');
+        
+        // Simulate upload progress
+        let progress = 0;
+        const progressInterval = setInterval(() => {
+            progress += Math.random() * 15;
+            if (progress > 90) progress = 90;
+            this.updateProgress(progress, `Uploading... ${Math.round(progress)}%`);
+        }, 200);
+        
+        // Reset form and button after successful upload
+        setTimeout(() => {
+            clearInterval(progressInterval);
+            this.updateProgress(100, 'Upload complete!');
+            setTimeout(() => {
+                this.resetForm();
+            }, 1000);
+        }, 2000);
+    }
+
+    resetForm() {
+        if (this.uploadBtn) {
+            this.uploadBtn.disabled = false;
+            this.uploadBtn.textContent = 'Upload All';
+        }
+        if (this.uploadForm) {
+            this.uploadForm.reset();
+        }
+        this.clearPreview();
+        this.hideError();
+        this.showProgress(false);
     }
 
     clearPreview() {
@@ -1001,7 +1223,7 @@ class ImageDetailsModal {
         });
     }
 
-    show(filename, url, width, height, size) {
+    show(filename, url, width, height, size, uploadTime) {
         if (!this.modal) return;
         
         document.getElementById('modalImg').src = url;
@@ -1012,6 +1234,7 @@ class ImageDetailsModal {
         document.getElementById('modalHtml').value = `<img src="${url}" alt="Image" />`;
         document.getElementById('modalBB').value = `[img]${url}[/img]`;
         document.getElementById('modalMd').value = `![alt text](${url})`;
+        document.getElementById('modalUploadTime').textContent = this.formatUploadTime(uploadTime);
         
         this.modal.style.display = 'flex';
     }
@@ -1027,6 +1250,12 @@ class ImageDetailsModal {
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     }
+
+    formatUploadTime(timestamp) {
+        if (!timestamp) return '';
+        const date = new Date(timestamp * 1000);
+        return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0') + ' ' + String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0') + ':' + String(date.getSeconds()).padStart(2, '0');
+    }
 }
 
 // Global functions for backward compatibility
@@ -1034,8 +1263,8 @@ function showTab(tab) {
     window.tabManager?.showTab(tab);
 }
 
-function showImageDetails(filename, url, width, height, size) {
-    window.imageModal?.show(filename, url, width, height, size);
+function showImageDetails(filename, url, width, height, size, uploadTime) {
+    window.imageModal?.show(filename, url, width, height, size, uploadTime);
 }
 
 function closeImgDetails() {
@@ -1054,6 +1283,201 @@ document.addEventListener('DOMContentLoaded', function() {
     window.fileManager = new FileManager();
     window.imageModal = new ImageDetailsModal();
 });
+
+// Infinite scroll for Manage Images
+let allFiles = <?php echo json_encode($allFiles); ?>;
+const uploadDir = <?php echo json_encode($uploadDir); ?>;
+const uploadUrl = <?php echo json_encode($uploadUrl); ?>;
+const imagesPerBatch = 12;
+let loadedCount = 0;
+let loading = false;
+
+function refreshImageList() {
+    // This would ideally be an AJAX call to get fresh file list
+    // For now, we'll reload the page to get fresh data
+    if (window.location.hash === '#section-manage') {
+        window.location.reload();
+    }
+}
+
+function renderImageCard(file) {
+    const filePath = uploadDir + file;
+    const fileUrl = uploadUrl + file;
+    const imgInfo = window.allImageInfo[file] || [0,0];
+    const fileSize = window.allImageSizes[file] || 0;
+    const uploadTime = window.allImageTimes[file] || 0;
+    return `<div class="img-card" tabindex="0" data-size="${fileSize}" data-uploadtime="${uploadTime}">
+        <input type="checkbox" class="file-checkbox" value="${file}" style="position: absolute; top: 8px; left: 8px; z-index: 10;">
+        <img src="${fileUrl}" alt="" loading="lazy" onload="this.classList.add('loaded')" onclick="showImageDetails('${file.replace(/'/g, "\\'")}', '${fileUrl.replace(/'/g, "\\'")}', ${imgInfo[0]}, ${imgInfo[1]}, ${fileSize}, ${uploadTime})" style="cursor: pointer;">
+        <div class="filename">${file}</div>
+        <div class="upload-date" style="font-size:0.93em;color:var(--text);opacity:0.7;margin-bottom:6px;">Uploaded: ${formatUploadTime(uploadTime)}</div>
+        <form method="post">
+            <input type="hidden" name="delete_file" value="${file}">
+            <button type="submit" style="display: flex; align-items: center; gap: 6px; background: #d9534f; color: #fff; border: none; border-radius: 6px; padding: 6px 18px; font-size: 1em; cursor: pointer; margin-top: 0; margin-bottom: 0; transition: background 0.2s; font-weight: 600;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Delete
+            </button>
+        </form>
+    </div>`;
+}
+
+// Precompute image info in PHP for all files
+window.allImageInfo = {};
+window.allImageSizes = {};
+window.allImageTimes = {};
+<?php foreach ($allFiles as $file):
+    $filePath = $uploadDir . $file;
+    $imgInfo = @getimagesize($filePath);
+    $fileSize = filesize($filePath);
+    $uploadTime = filemtime($filePath);
+?>
+window.allImageInfo[<?php echo json_encode($file); ?>] = [<?php echo (int)($imgInfo[0] ?? 0); ?>, <?php echo (int)($imgInfo[1] ?? 0); ?>];
+window.allImageSizes[<?php echo json_encode($file); ?>] = <?php echo (int)$fileSize; ?>;
+window.allImageTimes[<?php echo json_encode($file); ?>] = <?php echo (int)$uploadTime; ?>;
+<?php endforeach; ?>
+
+function loadNextBatch() {
+    if (loading) return;
+    loading = true;
+    const gallery = document.getElementById('imagesGallery');
+    if (!gallery) return;
+    gallery.classList.add('loading');
+    setTimeout(() => { // Simulate async
+        let html = '';
+        for (let i = loadedCount; i < Math.min(loadedCount + imagesPerBatch, allFiles.length); i++) {
+            html += renderImageCard(allFiles[i]);
+        }
+        gallery.insertAdjacentHTML('beforeend', html);
+        loadedCount += imagesPerBatch;
+        gallery.classList.remove('loading');
+        loading = false;
+        // Re-initialize checkboxes and modal triggers
+        if (window.fileManager) window.fileManager.init();
+        collectModalImages();
+    }, 200); // Simulate loading delay
+}
+
+function handleScroll() {
+    const gallery = document.getElementById('imagesGallery');
+    if (!gallery) return;
+    const scrollY = window.scrollY || window.pageYOffset;
+    const viewport = window.innerHeight;
+    const galleryRect = gallery.getBoundingClientRect();
+    if (galleryRect.bottom - 100 < viewport) {
+        if (loadedCount < allFiles.length) {
+            loadNextBatch();
+        }
+    }
+}
+
+function initGallery() {
+    loadedCount = 0;
+    const gallery = document.getElementById('imagesGallery');
+    if (gallery) {
+        gallery.innerHTML = '';
+        if (allFiles.length === 0) {
+            gallery.innerHTML = '<div style="color:var(--text);opacity:0.7;font-size:1em;grid-column:1/-1;text-align:center;padding:40px;">No images uploaded yet.</div>';
+        } else {
+            loadNextBatch();
+        }
+    }
+}
+
+window.addEventListener('scroll', handleScroll);
+
+// Add modal navigation functions back
+window.imageModalImages = [];
+window.imageModalIndex = 0;
+
+function collectModalImages() {
+    window.imageModalImages = [];
+    document.querySelectorAll('.images .img-card img').forEach((img) => {
+        const card = img.closest('.img-card');
+        const filename = card.querySelector('.filename').textContent;
+        const url = img.src;
+        const size = parseInt(card.getAttribute('data-size')) || 0;
+        const dims = img.naturalWidth && img.naturalHeight ? [img.naturalWidth, img.naturalHeight] : [0,0];
+        const uploadTime = parseInt(card.getAttribute('data-uploadtime')) || 0;
+        window.imageModalImages.push({ filename, url, size, dims, uploadTime });
+    });
+}
+
+function showImageDetails(filename, url, width, height, size, uploadTime) {
+    collectModalImages();
+    if (!window.imageModalImages.length) return;
+    const idx = window.imageModalImages.findIndex(img => img.filename === filename && img.url === url);
+    window.imageModalIndex = idx >= 0 ? idx : 0;
+    showImageDetailsByIndex(window.imageModalIndex);
+}
+
+function showImageDetailsByIndex(idx) {
+    const imgs = window.imageModalImages;
+    if (!imgs.length) return;
+    if (idx < 0) idx = imgs.length - 1;
+    if (idx >= imgs.length) idx = 0;
+    window.imageModalIndex = idx;
+    const img = imgs[idx];
+    var modal = document.getElementById('imgDetailsModal');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    document.getElementById('modalImg').src = img.url;
+    document.getElementById('modalFilename').textContent = img.filename;
+    document.getElementById('modalSize').textContent = formatBytes(img.size);
+    document.getElementById('modalDims').textContent = img.dims[0] + ' × ' + img.dims[1];
+    document.getElementById('modalDirect').value = img.url;
+    document.getElementById('modalHtml').value = '<img src="' + img.url + '" alt="Image" />';
+    document.getElementById('modalBB').value = '[img]' + img.url + '[/img]';
+    document.getElementById('modalMd').value = '![alt text](' + img.url + ')';
+    document.getElementById('modalUploadTime').textContent = formatUploadTime(img.uploadTime);
+}
+
+document.getElementById('modalPrevBtn').onclick = function(e) {
+    e.stopPropagation();
+    if (!window.imageModalImages.length) return;
+    showImageDetailsByIndex(window.imageModalIndex - 1);
+};
+document.getElementById('modalNextBtn').onclick = function(e) {
+    e.stopPropagation();
+    if (!window.imageModalImages.length) return;
+    showImageDetailsByIndex(window.imageModalIndex + 1);
+};
+document.addEventListener('keydown', function(e) {
+    var modal = document.getElementById('imgDetailsModal');
+    if (modal && modal.style.display === 'flex' && window.imageModalImages.length) {
+        if (e.key === 'ArrowLeft') showImageDetailsByIndex(window.imageModalIndex - 1);
+        if (e.key === 'ArrowRight') showImageDetailsByIndex(window.imageModalIndex + 1);
+    }
+});
+
+function formatBytes(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    let k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB'], i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function formatUploadTime(timestamp) {
+    if (!timestamp) return '';
+    const date = new Date(timestamp * 1000);
+    return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0') + ' ' + String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0') + ':' + String(date.getSeconds()).padStart(2, '0');
+}
+
+// Initialize gallery when DOM is ready
+document.addEventListener('DOMContentLoaded', function() {
+    initGallery();
+});
+
+// Refresh gallery when switching to Manage Images tab
+const originalShowTab = window.tabManager?.showTab;
+if (window.tabManager) {
+    window.tabManager.showTab = function(tab) {
+        originalShowTab.call(this, tab);
+        if (tab === 'manage') {
+            setTimeout(initGallery, 100); // Small delay to ensure tab is visible
+        }
+    };
+}
 </script>
 </body>
 </html> 
